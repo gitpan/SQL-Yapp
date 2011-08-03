@@ -2,300 +2,6 @@
 
 package SQL::Yapp;
 
-# TODO:
-#    - missing syntax:
-#      UNION
-#      WITH .. SELECT
-#      CREATE INDEX
-#      DROP INDEX
-#      TRUNCATE (MySQL and PostgreSQL)
-#     Probably later:
-#      LOCK
-#      SELECT ... *INTO*
-#      SET TRANSACTION
-#      more stuff
-#
-#    - Have a table of allowed tables to enable more compile-time checks.
-#      (Any interpolated table will be accepted and checked by the DB
-#      system instead -- we only want compile-time checks here.)
-#
-#    - Maybe have a table of columns per table to check at compile time.
-#      This is more tricky if done with context, i.e., per table, because
-#      we'd have to fully understand scoping.  A complete list of columns
-#      is a start, though, particularly for DBs that have been constructed
-#      to work with NATURAL JOIN, which typically have very unique column
-#      names in their tables.
-#
-#    - Maybe have ExprAs and TableAs objects.
-#
-#    - Maybe have WhenThen objects (two classes: one for expr, one for
-#      suffix operation, for the two types of operations:
-#      CASE WHEN and CASE x WHEN (the latter allows both).
-#
-#    - MAYBBE:
-#      Allow keywords and constructs to be marked as optional (if the read
-#      dialect allows them).  Probably we need to list all possible optional
-#      stuff, because this may also depend on the DB version.  Things
-#      immediately coming to mind:
-#          ?IF NOT EXISTS         MySQL only
-#          ?IF EXISTS             MySQL only
-#          ?ONLY                  PostgreSQL only
-#
-#    - for peep-hole optimisions on the generated code, str_append_... should
-#      not directly construct a string, but return a recursive structure of
-#      the term.  Each node should be something like:
-#
-#          { kind => '...', args => [...], ... }
-#
-#      E.g. the number 5:
-#          { kind => 'num', args => [ 5 ] }
-#
-#      Arbitrary perl interpolation in list or scalar context:
-#
-#          { kind => 'list',   args => [ 'do{perlcode}' ] }
-#          { kind => 'scalar', args => [ 'do{perlcode}' ] }
-#
-#      More information could be stored, of course:
-#
-#          { kind => 'join', args => [ ... ], sep => ',', prefix => 'CONCAT ' }
-#      or:
-#          { kind => 'map', args => [ ... ], body => '($_)' }
-#      etc.
-#
-#      On this structure, we could run an optimiser that removes maps,
-#      combines joins, etc.
-#
-#    - Add support for scalar references, which should become bind
-#      variables:
-#
-#          my $uid= ...;
-#          my $q= sql{ SELECT foo FROM bar WHERE uid = \$uid and name = ? };
-#
-#      "$q" should stringify as:
-#
-#          SELECT `foo` FROM `bar` WHERE `uid` = ? and `name` = ?
-#
-#      There shall be a function $q->bind($name) which produces a list of
-#      values, parameterised by all the ? found, automatically filling in
-#      all the \$ references automatically.  So:
-#
-#            $uid=99;
-#            my @a= $q->bind(4);
-#
-#      Should lead to @a=(99,4);
-#
-#      Implementing this is a bit tricky, but would be great.  We could
-#      then prepare statements with references, and very simply execute
-#      them later:
-#
-#            my $pq= $dbh->prepare($q);
-#            ...
-#            $pq->execute($q->bind(5));
-#
-#      LATER: If dbh is set, we could even provide prepare, execute, etc.
-#      functions ourselves to eliminate the need for the ->bind()
-#      invocation and for two variables to keep track of:
-#
-#            my $pq= $q->prepare();
-#            $pq->execute(5);
-#
-#
-#    - LATER: named bind variables:
-#
-#       my $q= sql{ ... WHERE time_insert BETWEEN ?{time_min} AND ?{time_max} }
-#       my $pq= $q->prepare();
-#       ...
-#       $pq->execute(time_min => $time_min, time_max => $time_max);
-#
-#      Of course, the named bind variable could be used more than
-#      once:
-#
-#         my $q= sql{ ...
-#             WHERE
-#                 (time_insert BETWEEN ?{time_min} AND ?{time_max})
-#             OR  (time_close  BETWEEN ?{time_min} AND ?{time_max})
-#         };
-#
-#         my $pq= $q->prepare();
-#         ...
-#         $pq->execute(time_min => $time_min, time_max => $time_max);
-#
-#      Problem: mixing of normal and named variables. Solution: normal
-#      ones first, so we get prototypes like:
-#
-#         ($$$)        ; three normal bind variables
-#         ($$$%)       ; three normal plus some named bind variables
-#         (%)          ; only named bind variables
-#         etc.
-#
-#    - optimise:
-#      min1, min1default, and max1_if_scalar can usually be elimited by
-#      looking at the list:
-#
-#         - min1 and min1default can be dropped if the list is
-#           guaranteed to be non-empty
-#
-#         - max1_if_scalar can be dropped if the list guaranteed to have
-#           at most 1 element.
-#
-#      It is quite easy to count, actually, since only non-scalar
-#      'interpol' nodes are dangerous.
-#
-#    - optimise:
-#
-#         str_append_str ( str_append_comma str_append_str )*
-#
-#      -> one str_append_str with the concatenated string.
-#
-#    - Optimise:
-#         (map{ SQL::Yapp::column1($_) } SQL::Yapp::ASTERISK)
-#      is equal to:
-#         SQL::Yapp::ASTERISK
-#      and inside a join(), it can even be optimised to:
-#         '*'
-#
-#      Same for QUESTION and all the other special values.
-#
-#      Same for literal numbers if inside a join():
-#         (map{ SQL::Yapp::column1($_) } 5)
-#      in a join is equal to:
-#         5
-#
-#    - encapsulate different syntax (read and write) in different packages
-#      so that this code has no knowledge about MySQL, PostgreSQL, Oracle,
-#      etc., but lets the packages handle it.
-#
-# LATER:
-#    - ARRAY[...]
-#
-#    - C<//> will be normalised to C<COALESCE>?
-#
-#    - Normalisation:
-#
-#            COALESCE()               MySQL, PostgreSQL
-#        vs. NVL()                    Oracle             <-- unfold
-#
-#            SELECT ... <nothing>     MySQL, PostgreSQL
-#        vs. SELECT ... FROM dual     Oracle
-#
-#            CASE WHEN ... END        Std
-#        vs. DECODE()                 Oracle
-#
-#     With read_dialect containing 'perl',
-#     allow: &&, ||, ^^, ! as boolean operators.  This requires
-#     substitution based in read_dialect in set_expr_functor.
-#
-#    - Handle INSERT...SET without set2value if $write_dialect == 'mysql'.
-#
-#    - Handle LIMIT without large number if $write_dialect == 'postgresql'.
-#
-# DONE:
-#    - Statements:
-#      SELECT
-#      INSERT
-#      UPDATE
-#      DELETE
-#    - Expressions
-#      Missing:
-#      - special Expr syntax:
-#            CASE ... (WHEN ... THEN ...)* [ ELSE ... ] END)
-#
-#    - functions with special syntax, e.g. CAST(...)
-#          CAST      ( <expr> AS <type> )
-#          TREAT     ( <expr> AS <type> )
-#          POSITION  ( <expr> IN <expr> [ USING <char length units> ] )
-#          SUBSTRING ( <expr> FROM <expr> [ FOR <expr> ] [ USING <char length units> ] )
-#          { CHAR_LENGTH | CHARACTER_LENGTH } ( <expr> [ USING <char length units> ] )
-#          CONVERT   ( <expr> USING <transcoding name> )
-#          OVERLAY   ( <expr> PLACING <expr> FROM <expr> [ FOR <expr> ] [ USING <char length units> ] )
-#          EXTRACT   ( <expr> FROM <expr> )
-#          UNNEST    ( <expr> ) [ WITH ORDINALITY ]
-#          TRANSLATE ( <expr> USING <transliteration name> )
-#    - XOR
-#
-#    - Interpolation:
-#      Allow (arrays of) array references after INSERT ... VALUES:
-#
-#        my $a= ['a', 'b'];
-#
-#        INSERT INTO t VALUES $a
-#
-#        my @a= (['a','b'],[1,2]);
-#
-#        INSERT INTO t VALUES @a
-#
-#      For this, maybe allow reference syntax:
-#
-#        my @a= ('a', 'b');
-#
-#        INSERT INTO t VALUES \@a
-#
-#      Here, it is not needed, however, because you can write:
-#
-#        INSERT INTO t VALUES (@a)
-#
-#      This even works now.
-#
-#    - subqueries: ANY, SOME, ALL
-#
-#    - implement context: sql{...} as expression will expand as an SQL::Yapp::Expr
-#
-#    - Allow Stmt interpolation in subqueries:
-#
-#          my $stmt= sql{ SELECT ... };
-#
-#          ... WHERE a = ANY (Stmt $stmt) ...
-#
-#      This requires us to check for a SELECT Stmt, not only a Stmt, which
-#      could be wrong.  Maybe we leave that problem to the SQL server?
-#      In that case, it would be easy, just add another function
-#      parse_select_stmt() that's like parse_stmt() but only accepts SELECT
-#      and interpol.
-#                  
-#    - Think about interpolating ORDER BY / GROUP BY stuff.  It will
-#      happen in applications where the user can set the order.
-#      At least we need to interpolate the direction DESC/ASC.
-#      Better yet: a sequence of Order:
-#
-#          my $dir=   $desc ? sqlDir{DESC} : sqlDir{ASC};
-#          my @order= sqlOrder{ a Dir $dir, b ASC }
-#          my $q=     sql{ SELECT * FROM B ORDER BY @order };
-#
-#      It would be interesting whether it's possible to implement
-#      double-negation:
-#
-#          my $q=     sql{ SELECT * FROM B ORDER BY @order DESC };
-#
-#          --> ... a ASC, b DESC
-#
-#    - query types:
-#      SELECT
-#
-#    - think about handling table and column names.
-#
-#      - The goal is to modify table names on the fly, e.g. to prefix
-#        each table name with a user-defined string.  This means we
-#        need to finely distinguish different types of names.
-#
-#      - How to handle unqualified and qualified column specifications
-#        in interpolations?  I.e.:
-#
-#            SELECT foo.$col_name1 FROM ...
-#        vs.
-#            SELECT $col_name2 FROM ...
-#
-#        $col_name2 may contain a table name, while $col_name1 may not.
-#        Maybe we must require that $col_name1 is a simple Perl string,
-#        so that we can invoke:
-#
-#            quote_identifier('foo', $col_name1)
-#
-#        while $col_name2 may be either a Perl string, or a Column
-#        object which is already in proper syntax.  In any case, for
-#        qualified column names, we *must* invoke quote_identifier
-#        with both arguments.
-#
-
 use strict;
 use warnings;
 use vars         qw($VERSION @EXPORT_OK);
@@ -309,7 +15,7 @@ use Text::Balanced;
 
 require v5.8.8;
 
-$VERSION= '1.00';
+$VERSION= 1.001;
 
 @EXPORT_OK=qw(
     dbh
@@ -381,7 +87,7 @@ my %dialect= (  # known dialects
     oracle     => 1,
 );
 
-my $write_dialect= 'generic'; # not yet supported
+my $write_dialect= 'generic'; # not well-supported yet, only a few things are done
 my %read_dialect= (
     mysql    => 1,
     postgresql => 1,
@@ -445,7 +151,12 @@ my %multi_token= (
     NCHAR => {
         VARYING => {}
     },
-    DEFAULT => { VALUES => {} },
+    DEFAULT => {
+        VALUES => {},
+        CHARACTER => {
+            SET => {}
+        },
+    },
     ON => {
         DUPLICATE => { KEY => { UPDATE => {} } },
         DELETE => {},
@@ -717,8 +428,8 @@ my %import_handler_bool= (
 );
 my %import_handler_ref= (
     'dbh'                  => \&dbh,
-    'quote'                => \&quote_val,
-    'quote_identifier'     => \&quote_id,
+    'quote'                => \&quote,
+    'quote_identifier'     => \&quote_identifier,
     'xlat_catalog'         => \&xlat_catalog,
     'xlat_schema'          => \&xlat_schema,
     'xlat_table'           => \&xlat_table,
@@ -1142,6 +853,27 @@ sub declare_op($$;%)
 #
 #     ::    CAST (or TREAT?) in PostgreSQL
 #
+
+# If the type is found in the following table, stringification will be
+# handled by _prefix() and _suffix().  Otherwise, the compiled Perl
+# code will already contain the logic of how to build the SQL command.
+my %functor_kind= (
+    'infix()'  => 'suffix',
+    'infix2'   => 'suffix',
+    #'infix23' => 'suffix',  # complex syntax, cannot be changed later, see funcsep
+    #'infix3'  => 'suffix',  # complex syntax, cannot be changed later, see funcsep
+
+    'funcall'  => 'prefix',
+    #'funcsep' => 'prefix',  # complex syntax, currently not supported
+
+    # Not built via _suffix() or _prefix():
+    #
+    # prefixn
+
+    'suffix'   => 'suffix',  # applied point-wise, different from funcall
+    'prefix'   => 'prefix',  # applied point-wise, different from funcall
+    'funcall1' => 'prefix',  # applied point-wise, different from funcall
+);
 my %functor_suffix= ( # for functors read in infix or suffix notation
     # aliasses:
     '==' => '=',
@@ -1150,11 +882,28 @@ my %functor_suffix= ( # for functors read in infix or suffix notation
     # infix2 and infix():
     declare_op('POWER', 'funcall', prec => 80, assoc => ASSOC_RIGHT,
                                 read_value => '**', read_type => 'infix2'), # Oracle
-    declare_op('POWER', 'funcall', prec => 80, assoc => ASSOC_RIGHT,
-                                read_value => '^', read_type => 'infix2'),  # MySQL
+    #declare_op('POWER', 'funcall', prec => 80, assoc => ASSOC_RIGHT,
+    #                            read_value => '^', read_type => 'infix2'), # not MySQL
     #declare_op('POWER', 'funcall', prec => 80, assoc => ASSOC_RIGHT
     #                           read_value => ':', read_type => 'infix2'),  # Postgres??
 
+    # bitwise operators:
+    declare_op('^', 'infix()', assoc => ASSOC_LEFT,
+                                dialect => {
+                                    oracle => make_op('BITXOR', 'funcall'),
+                                }),
+
+    declare_op('|', 'infix()', assoc => ASSOC_LEFT,
+                                dialect => {
+                                    oracle => make_op('BITOR', 'funcall'),
+                                }),
+
+    declare_op('&', 'infix()', assoc => ASSOC_LEFT,
+                                dialect => {
+                                    oracle => make_op('BITAND', 'funcall'),
+                                }),
+
+    # others:
     declare_op('*',   'infix()', prec => 70, assoc => ASSOC_LEFT, result0 => 1),
     declare_op('/',   'infix2',  prec => 70, assoc => ASSOC_LEFT),
 
@@ -1229,6 +978,23 @@ my %functor_prefix= ( # functors read in prefix notation:
     declare_op('+',   'prefix1', prec => 90, read_type => 'prefix'), # prefix1 disallows list context
     declare_op('-',   'prefix',  prec => 90),
     declare_op('NOT', 'prefix',  prec => 40),
+
+    declare_op('~', 'prefix',   dialect => {                                   # MySQL
+                                    oracle => make_op('BITNOT', 'funcall'),     # funcall1:
+                                }),
+
+    declare_op('BITXOR', 'funcall', assoc => ASSOC_LEFT,
+                                dialect => {
+                                    mysql => make_op('^', 'infix()'),
+                                }),
+    declare_op('BITOR', 'funcall', assoc => ASSOC_LEFT,
+                                dialect => {
+                                    mysql => make_op('|', 'infix()'),
+                                }),
+    declare_op('BITAND', 'funcall', assoc => ASSOC_LEFT,
+                                dialect => {
+                                    mysql => make_op('&', 'infix()'),
+                                }),
 
     declare_op('POWER',  'funcall',
                read_value => 'POW'), # MySQL
@@ -1632,7 +1398,7 @@ sub token_scan_rec($$)
                        ==   | !=   | <= | >=
                     |  \&\& | \|\| | \! | \^\^
                     |  \*\* | \^
-                    |  [-+*\/;:,.()\[\]{}<=>?\%\&]
+                    |  [-+*\/;:,.()\[\]{}<=>?\%\&\|]
                     )/gcsx;
 
     # specials:
@@ -2814,6 +2580,9 @@ sub parse_thing($$;$$)
         'expr' => sub {
             return parse_expr ($lx, $left, $right_mark)
         },
+        'type' => sub {
+            return parse_type ($lx);
+        },
         'string_expr' => sub {
             return parse_expr ($lx, $left, 'string')
         },
@@ -2980,11 +2749,6 @@ sub set_expr_functor($$@)
     my ($r, $functor, @arg)= @_;
     my_confess if $r->{arg};
 
-    if (my $dialect= $functor->{dialect}) {
-        if (my $functor2= find_ref(%$dialect, $write_dialect)) {
-            $functor= $functor2;
-        }
-    }
     $r->{type}=    $functor->{type};
     $r->{functor}= $functor;
     $r->{arg}=     [ @arg ];
@@ -4378,7 +4142,7 @@ sub parse_stmt($)
 #
 # A str_append_min1() ... str_append_end() block checks that there
 # is at least one result in the enclosed list.  This, together with
-# max1_if_scalar, are slightly inefficient and should later be eliminated
+# _max1_if_scalar, are slightly inefficient and should later be eliminated
 # if possible.
 #
 # str_get_string() returns the current string as composed so far.  If the
@@ -5458,40 +5222,6 @@ sub str_append_thing($$$$)
                     str_append_thing ($str, $thing->{arg}[0], $in_list, PARENS);
                     str_append_end ($str);
                 },
-                'prefix' => sub {
-                    return str_append_parens ($str, $thing, $in_list)
-                        if $parens;
-                    die 'Expected exactly 1 argument' unless scalar(@{ $thing->{arg} }) == 1;
-
-                    if ($in_list) {
-                        str_append_map ($str, "'$thing->{functor}{value} '.(\$_)");
-                    }
-                    else {
-                        str_append_join ($str,
-                            prefix => "$thing->{functor}{value} ",
-                            never_empty => 1
-                        );
-                    }
-                    str_append_thing ($str, $thing->{arg}[0], $in_list, PARENS);
-                    str_append_end ($str);
-                },
-                'suffix' => sub {
-                    return str_append_parens ($str, $thing, $in_list)
-                        if $parens;
-                    die 'Expected exactly 1 argument' unless scalar(@{ $thing->{arg} }) == 1;
-
-                    if ($in_list) {
-                        str_append_map ($str, "(\$_).' $thing->{functor}{value}'");
-                    }
-                    else {
-                        str_append_join ($str,
-                            suffix  => " $thing->{functor}{value}",
-                            never_empty => 1
-                        );
-                    }
-                    str_append_thing ($str, $thing->{arg}[0], $in_list, PARENS);
-                    str_append_end ($str);
-                },
 
                 'infix2' => sub {
                     $in_list= NOT_IN_LIST; # just to be sure
@@ -5524,24 +5254,46 @@ sub str_append_thing($$$$)
                     str_append_end   ($str);
                 },
 
-                'infix()' => sub {
-                    return str_append_parens ($str, $thing, $in_list)
-                        if $parens;
+                # prefix and suffix allow bitwise application:
+                # Currently not supported via _prefix() and _suffix() helper
+                # functions, but may be later.  (Needs only a little rewrite
+                # here.  The helper functions don't need to be changed.
+                'suffix' => 'prefix',
+                'prefix' => sub {
                     my $f= $thing->{functor};
-                    str_append_list ($str, $thing->{arg}, PARENS,
-                        sep     => " $f->{value} ",
-                        result0 => $f->{result0},
-                    );
+                    my $fk= $functor_kind{$f->{type} || ''}
+                            or die 'Expected $thing->{type} to be mapped by %functor_kind';
+                    if ($in_list) {
+                        my $qt= quote_perl($f->{value});
+                        str_append_map ($str, __PACKAGE__."::_".$fk."($qt,\$_)");
+                        str_append_thing ($str, $thing->{arg}[0], IN_LIST, PARENS);
+                        str_append_end ($str);
+                    }
+                    else {
+                        str_append_funcall($str, __PACKAGE__."::_".$fk, NOT_IN_LIST);
+                        str_append_thing ($str, $f->{value}, IN_LIST, NO_PARENS);
+                        for my $l (@{ $thing->{arg} }) {
+                            str_append_thing ($str, $l, IN_LIST, NO_PARENS);
+                        }
+                        str_append_end ($str);
+                    }
                 },
 
-                'funcall' => sub {
-                    $in_list= NOT_IN_LIST; # just to be sure (params are IN_LIST, of course)
+                # funcall and infix use args inline if they are in list context.
+                # They are handled by _prefix() and _suffix() helper functions in order
+                # to allow dialect conversion:
+                'funcall' => 'infix()',
+                'infix()' => sub {
                     my $f= $thing->{functor};
-                    str_append_join ($str, never_empty => 1);
-                    str_append_str  ($str, "$f->{value}(");
-                    str_append_list ($str, $thing->{arg}, NO_PARENS, result0 => '');
-                    str_append_str  ($str, ')');
-                    str_append_end  ($str);
+                    my $fk= $functor_kind{$f->{type} || ''}
+                            or die 'Expected $thing->{type} to be mapped by %functor_kind';
+
+                    str_append_funcall($str, __PACKAGE__."::_".$fk, NOT_IN_LIST);
+                    str_append_thing ($str, $f->{value}, IN_LIST, NO_PARENS);
+                    for my $l (@{ $thing->{arg} }) {
+                        str_append_thing ($str, $l, IN_LIST, NO_PARENS);
+                    }
+                    str_append_end ($str);
                 },
 
                 'funcsep' => sub {
@@ -5645,7 +5397,7 @@ sub to_perl($$\@)
         str_append_thing ($str, $thing, IN_LIST, NO_PARENS);
     }
     my $text= str_get_string($str);
-    return "do{".__PACKAGE__."::max1_if_scalar map{".__PACKAGE__."::${kind}->obj(\$_)} $text}",
+    return "do{".__PACKAGE__."::_max1_if_scalar map{".__PACKAGE__."::${kind}->obj(\$_)} $text}",
 }
 
 ######################################################################
@@ -6445,7 +6197,57 @@ sub croak_no_ref($)
 # (would-be analog to 'wantarray').  So these functions must always
 # return a blessed reference.
 
-sub max1_if_scalar(@)
+sub _functor($@)
+{
+    my ($functor, @arg)= @_;
+
+    # possibly translate the functor to a different SQL dialect:
+    if (my $dialect= $functor->{dialect}) {
+        if (my $f2= find_ref(%$dialect, $write_dialect)) {
+            $functor= $f2;
+        }
+    }
+
+    # print it:
+    my $name= $functor->{value};
+
+    # prefix and suffix are not handled here, because they behave
+    # differently: they assume exactly one argument are applied
+    # point-wise.  They cannot be switched (ok, we might switch
+    # between prefix and suffix, but that's not supported yet).
+    #
+    # Actually, this code is mainly for CONCAT vs. ||
+    return switch ($functor->{type},
+        'infix()' => sub {
+            '('.join(" $name ", @arg).')';
+        },
+        'funcall' => sub {
+            "$name(".join(", ", @arg).")";
+        },
+        'prefix' => sub {
+            die "Error: exactly one argument expected, found @arg" unless scalar(@arg) == 1;
+            "($name $arg[0])"
+        },
+        'suffix' => sub {
+            die "Error: exactly one argument expected, found @arg" unless scalar(@arg) == 1;
+            "($arg[0] $name)"
+        },
+    );
+}
+
+sub _prefix($@)
+{
+    my $name= shift;
+    return _functor($functor_prefix{$name} || { value => $name, type => 'funcall' } , @_);
+}
+
+sub _suffix($@)
+{
+    my $name= shift;
+    return _functor($functor_suffix{$name}, @_);
+}
+
+sub _max1_if_scalar(@)
 {
     return @_ if wantarray;
     croak 'Error: Multiple results cannot be assigned to scalar'
@@ -7096,7 +6898,8 @@ sub limit($$)
 {
     my ($cnt, $offset)= @_;
 
-    # FIXME: if dialect is 'std', produce OFFSET/FETCH clause (SQL-2008)
+    # FIXME: if dialect is 'std' (or maybe 'std2008'), produce OFFSET/FETCH
+    #        clause (SQL-2008).
     if (defined $cnt) {
         if (defined $offset) {
             return " LIMIT ".limit_number($cnt)." OFFSET ".limit_number($offset);
@@ -7215,12 +7018,13 @@ the chapter L<"Initialisation"> below.
 
 You can use SQL syntax natively in Perl now, without worrying about
 quotation or SQL injections.  The SQL objects can be used directly in
-DBI calls (e.g. prepare):
+DBI calls:
 
     my $first_name= "Peter";
     my $dbq= $dbh->prepare(sql{
         SELECT surname FROM customer WHERE first_name = $first_name
     });
+    $dbq->execute();
 
 The interpolated SQL looks much like a C<do{...}> block.  Depending on
 context, different quotation for interpolated Perl strings is used.
@@ -7279,20 +7083,20 @@ Embedding is fully recursive: you can have SQL in Perl in SQL in Perl...
 SQL structures of different kinds can be parsed and stored in Perl
 handles and used in other SQL structures:
 
-    $expr= sqlExpr{         (b * 6) = COALESCE(C, D)        };
+    $expr= sqlExpr{         (b * 6) = COALESCE(c, d)        };
     $tab=  sqlTable{        bar                             };
     $col=  sqlColumn{       $tab.name                       };
     $join= sqlJoin{         LEFT JOIN foo ON $col == foo.id };
     @ordr= sqlOrder{        a, b DESC                       };
-                            
+
     $stmt= sqlStmt{         SELECT $col
                             FROM $tab
                             Join $join
                             WHERE $expr
                             ORDER BY @ordr    };
 
-    $type= sqlType{         INT NOT NULL     };
-    $spec= sqlColumnSpec {  $type DEFAULT 17 };
+    $type= sqlType{         INT(10) };
+    $spec= sqlColumnSpec {  $type NOT NULL DEFAULT 17 };
     @to=   sqlTableOption{  ENGINE innodb
                             DEFAULT CHARACTER SET utf8
                          };
@@ -7376,7 +7180,7 @@ define these functions directly in the package invocation:
        quote            => sub { $dbh->quote($_[0])         },
        quote_identifier => sub { $dbh->quote_identifier(@_) };
 
-A fancy package option is 'marker', which define to which string the
+A fancy package option is 'marker', which defines to which string the
 package reacts in your Perl script.  The default is 'sql', so sql{...}
 encloses SQL blocks.  You might want to use something different:
 
@@ -7447,8 +7251,10 @@ Currently the following dialects are known:
 C<'generic'> means to try to please everyone while C<'std'> means to
 try to please no-one, i.e., to stick to the standard. :-)
 
-The dialect options must be given as early as initialisation, because
-they must be known at compile time.
+The C<read_dialect> option must be given in initialisation, because
+they must be known at compile time.  The C<write_dialect> option may
+be set before SQL expressions are evaluated (and thus stringified into
+SQL syntax).
 
 For information, what normalisation is done, please refer to Section
 L<"Normalisation">.
@@ -7487,8 +7293,9 @@ For the C<_prefix> options, also see Section
 L<"Identifier Name Translation">.
 
 For programs that do not know in advance how to connect to SQL, it is
-also not possible to set dbh in the use clause.  The SQL
-parse/preprocessor if the library still works, so you can do:
+also infeasible to set dbh in the use clause.  The SQL
+parser/preprocessor of the library still works, so you can do without
+problems:
 
     use SQL::Yapp;
 
@@ -7497,9 +7304,9 @@ parse/preprocessor if the library still works, so you can do:
         return sql{ SELECT * FROM mydb };
     }
 
-Of course, without setting the DB handle, the expressions the
-preprocessor generates cannot be executed, because the library does
-not know how to quote properly, etc.
+Without setting the DB handle, the expressions the preprocessor
+generates cannot be stringified and executed, because the library does
+not know how to quote properly.
 
 
 =head2 Basic Syntax and Usage
@@ -7523,7 +7330,7 @@ this with DBI as follows:
 
     my $dbq= $dbh->prepare(sql{SELECT foo FROM bar});
 
-B<Note again>: the result of sql{...} is a I<list>!  So if you have
+B<Note again>: the result of sql{...} is a I<list>.  So if you have
 multiple statements in your sql{...} block, you get multiple results.
 This way, the structure embeds nicely into Perl using Perl native
 concepts:
@@ -7677,10 +7484,10 @@ This change was done for more elegent embedding of SQL into Perl.  It
 also helps syntax highlighting...  E.g., you can naturally use string
 interpolations, e.g.:
 
-   my $x= "'test";  # most be quoted properly to work!
-   my $y= sql{
-       SELECT "difficult: $y"
-   };
+    my $x= "'test";  # most be quoted properly to work!
+    my $y= sql{
+        SELECT "difficult: $x"
+    };
 
 =head2 Extensions
 
@@ -7734,10 +7541,10 @@ I am sure there's more that could be documented here.
 The basic construct for embedding Perl code in SQL is with braced
 code blocks:
 
-   sql{
-       SELECT foo FROM bar WHERE
-           { get_where_clause() }
-   }
+    sql{
+        SELECT foo FROM bar WHERE
+            { get_where_clause() }
+    }
 
 Interpolation of Perl is triggered by C<$>, C<@>, C<%>, C<"..."> and
 C<{...}> in embedded SQL.  The syntax of such expressions is just like
@@ -7747,25 +7554,25 @@ Inside C<"..."> strings, you can also use Perl interpolation.
 
 E.g. the following forms are the same:
 
-   my $greeting= 'Hello World';
-   my $s1= sql{ SELECT {$greeting} };    # general {...} interpolation
-   my $s2= sql{ SELECT $greeting   };    # direct $ interpolation
-   my $s3= sql{ SELECT "$greeting" };    # direct string interpolation
+    my $greeting= 'Hello World';
+    my $s1= sql{ SELECT {$greeting} };    # general {...} interpolation
+    my $s2= sql{ SELECT $greeting   };    # direct $ interpolation
+    my $s3= sql{ SELECT "$greeting" };    # direct string interpolation
 
 When parsing SQL expressions (i.e., values), it is unclear whether a
 string or a column is used.  In that case, a string is used.  If you
 mean to interpolate a column name, use a single dot in front of your
 interpolation (this single dot is special syntax, and the final SQL
-string will not contain that dot, but proper SQL syntax, of course):
+string will not contain that dot, but be proper SQL syntax):
 
-   my $s1= sql{ SELECT blah.$x };        # unambiguous: $x is a column name
-   my $s2= sql{ SELECT $x.blah };        # unambiguous: $x is a table name
-   my $s3= sql{ SELECT "$x" };           # unambiguous: "..." is always a string
-   my $s4= sql{ SELECT $x };             # ambiguous: could be string or column,
-                                         #   => we resolve this as a string.
-   my $s5= sql{ SELECT .$x };            # unambiguous: $x is a column name
-                                         #   (the dot is special syntax)
-   my $s6= sql{ SELECT ."foo$x" };       # unambiguous: "foo$x" is a column name
+    my $s1= sql{ SELECT blah.$x };        # unambiguous: $x is a column name
+    my $s2= sql{ SELECT $x.blah };        # unambiguous: $x is a table name
+    my $s3= sql{ SELECT "$x" };           # unambiguous: "..." is always a string
+    my $s4= sql{ SELECT $x };             # ambiguous: could be string or column,
+                                          #   => we resolve this as a string.
+    my $s5= sql{ SELECT .$x };            # unambiguous: $x is a column name
+                                          #   (the dot is special syntax)
+    my $s6= sql{ SELECT ."foo$x" };       # unambiguous: "foo$x" is a column name
 
 For the complete description of the syntax, see L<< "<Perl>" >>.
 
@@ -7777,13 +7584,13 @@ won't jeopardise this by letting arbitrary raw strings to be injected.
 However, this module allows fully recursive embedding, i.e., it allows
 the use of sql{ ... } within the embedded Perl code.  Like so:
 
-   sql{
-       SELECT foo FROM bar WHERE
-           {$type eq 'a' ?
-               sql{foo >= 2}
-           :   sql{foo <= 1}
-           }
-   }
+    sql{
+        SELECT foo FROM bar WHERE
+            {$type eq 'a' ?
+                sql{foo >= 2}
+            :   sql{foo <= 1}
+            }
+    }
 
 All sql{...} blocks inside the embedded Perl code will not parse a statement
 list, but an expression, because the {...} is inside the 'WHERE' clause.  This
@@ -7807,21 +7614,37 @@ SQL expressions, too, by changing the default:
 Note: Type checking of interpolations will be done at run-time.
 So the following only fails at run-time, not compile time:
 
-  my $q= sql{
-      SELECT foo FROM bar WHERE
-      {$is_large ?
-          sqlStmt{SELECT foz FROM baz}
-      :   sqlExpr{test > 5}
-      }
-  };
-
 In the above example, this module has no way of knowing: (a) that
 the ?: operator yields inconsistent kinds of SQL things, (b) that
 the embedded Perl expression may return sqlStmt.  So the case that
 sqlStmt is returned only fails at run-time.
 
-Further, the default for sql{...} inside interpolations may be wrong
-for complex Perl code.  The default the local context where the
+    my $q= sql{
+        SELECT foo FROM bar WHERE
+        {$is_large ?
+            sqlStmt{UPDATE foz SET x=5 WHERE name=''}
+        :   sqlExpr{test > 5}
+        }
+    };
+
+Actually, this means that you have the same dynamic type checking
+that Perl has.  The above only fails when C<$is_large> is true.
+And the following is, maybe surprisingly, correct
+(both for for true and false values of C<$is_large>):
+
+    my $q= sql{
+        SELECT foo FROM bar WHERE
+        {$is_large ?
+            sqlStmt{SELECT foz FROM baz}
+        :   sqlExpr{test > 5}
+        }
+    };
+
+This is correct, because a select statement can be used as a value,
+and thus in a where clause.
+
+The default interpretation of sql{...} inside interpolations may be
+wrong for complex Perl code.  The default the local context where the
 interpolation starts, so after WHERE, the default is Expr:
 
   my $q= sql{
@@ -7831,8 +7654,8 @@ interpolation starts, so after WHERE, the default is Expr:
              SELECT foz FROM baz   # <--- SYNTAX ERROR, because sql{...} is
          };                        #      parsed as sqlExpr{...} here, since
                                    #      the Perl interpolation follows
-                                   #      WHERE.  You need to use
-                                   #      sqlStmt here.
+                                   #      WHERE.  You probably want to use
+                                   #      sqlStmt{...} here.
          ...
      }
   };
@@ -7841,9 +7664,9 @@ Depending on context, embedded Perl is evaluated in scalar or in list
 context.  Inside SQL lists, the embedded block will be evaluated in
 list context:
 
-   my $q= sql{
-       SELECT { code1 }
-   };
+    my $q= sql{
+        SELECT { code1 }
+    };
 
 code1 will be evaluated in list context, and each result
 will be one value of the SELECT statement.
@@ -7853,10 +7676,10 @@ C<AND>, C<OR>, C<XOR>, C<||>, and arguments to any function are
 evaluated in list context.  Each element of the list becoming one
 operand:
 
-   my @a= (1,2,3);
-   my $q= sql{
-       SELECT 0 + @a
-   }
+    my @a= (1,2,3);
+    my $q= sql{
+        SELECT 0 + @a
+    }
 
 This selects C<0+1+2+3>.
 
@@ -7864,18 +7687,18 @@ Finally, in the above positions, many unary operators, namely C<->,
 C<NOT>, and any operator starting with C<IS ...>, will 'pass-through'
 list context, and are evaluated point wise.  E.g.:
 
-   my $q=sql{
-       SELECT 0 AND NOT(@a)
-   };
+    my $q=sql{
+        SELECT 0 AND NOT(@a)
+    };
 
-This will become C<0 AND NOT(1) AND NOT(2) AND NOT(3)>.
+This will become C<0 AND (NOT 1) AND (NOT 2) AND (NOT 3)>.
 
 In all other situations, values are evaluated in scalar context.
 Here's an example of scalar context:
 
-   my $q= sql{
-       SELECT name AS { code2 }
-   };
+    my $q= sql{
+        SELECT name AS { code2 }
+    };
 
 Here, code2 will be evaluated in scalar context, because only
 one single identifier can be used in the AS clause.
@@ -7891,14 +7714,14 @@ interleaving keys and values.
 Note that in contrast to Perl, syntactic arrays are not allowed in
 scalar context.  E.g. the following code is B<wrong>:
 
-   my @a= ...
-   my $q= sql{
-       SELECT name FROM customer WHERE @a  # <--- ERROR
-   };
+    my @a= ...
+    my $q= sql{
+        SELECT name FROM customer WHERE @a  # <--- ERROR
+    };
 
 This is to prevent bugs.  In plain Perl, @a would evaluate to the
 number of elements in @a, but in embedded SQL, this is an error.  If
-you really mean it, usw C<{ @a }> instead or C<${\scalar(@a)}>.
+you really mean it, use C<{ @a }> instead or C<${\scalar(@a)}>.
 
 In the same way as syntactic arrays, syntactic hashes are not allowed
 in scalar context.  If you think you must use them for some reason,
@@ -8032,7 +7855,7 @@ clauses with the C<AND> operator, e.g.:
 
     WHERE {} AND %cond
 
-With C<< %cond={ a => 1, b => 2, c => 3} >>, this expands to:
+With C<< %cond=( a => 1, b => 2, c => 3 ) >>, this expands to:
 
     WHERE a = 1 AND b = 2 AND c = 3
 
@@ -8075,7 +7898,7 @@ will expand point-wise:
 
     my @col= ( 'name', 'age' );
     my $q= sql{
-        SELECT ... WHERE {} AND (@col IS NOT NULL)
+        SELECT ... WHERE {} AND (.@col IS NOT NULL)
     };
 
 It will expand to something like:
@@ -8148,6 +7971,14 @@ expression, not a list.  E.g. the following is B<wrong>:
         SELECT .@col AS name    # <--- ERROR: @col not allowed with AS
     };
 
+It makes no sense to apply C<AS name> to both elements of C<@col>, so
+it is not allowed.  Without C<AS>, the clause does support array interpolation,
+of course:
+
+    my $q=sql{
+        SELECT .@col      # <--- OK, will become: SELECT `x`, `y`
+    };
+
 =head3 Type Interpolation
 
 Types can be stored in Perl variables:
@@ -8162,6 +7993,13 @@ This is equivalent to:
 
     my $t2= sqlType{ VARCHAR(50) CHARACTER SET utf8 };
 
+You can also remove specifiers, i.e., do the opposite of extending
+them, with a syntax special to this module starting with C<DROP>:
+
+    my $t1b= sqlType{ $t2 DROP CHARACTER SET };
+
+This makes C<$t1b> the same type as C<$t1>.
+
 To allow modification of types already constructed and stored as a
 Perl object, type attributes or base types can be changed by simply
 listing them after the base type or interpolation.  Any new value
@@ -8175,7 +8013,7 @@ This is equivalent to:
 
 You can even change the base type, keeping all other attributes if
 they are sensible.  Any attributes not appropriate for the new base
-type will be hidden:
+type will be removed:
 
     my $t4= sqlType{ $t2 DECIMAL };
 
@@ -8183,15 +8021,16 @@ This is equivalent to:
 
     my $t4= sqlType{ DECIMAL(50) };
 
-The character set attribute has silently been removed.  Or better: it
-is hidden when printing the type, but it is still there, so if you
-change the base type again, it will reappear:
+The character set attribute has silently been removed.  If you change
+the base type again, it will not reappear magically.
 
     my $t5= sqlType{ $t4 CHAR };
 
 This is equivalent to:
 
-    my $t5= sqlType{ CHAR(50) CHARACTER SET utf8 };
+    my $t5= sqlType{ CHAR(50) };
+
+Note how the character set was removed.
 
 In list context, modifications made to an array Perl interpolation
 will affect all the elements:
@@ -8249,7 +8088,7 @@ sqlTable object may hold a complete table specification:
 A table specification can be used to qualify a column name, of course:
 
     my $q= sql{
-        SELECT $tabsepc.name FROM ...
+        SELECT $tabspec.name FROM ...
     };
 
 The following is B<wrong>, because a table specification cannot be
@@ -8273,6 +8112,7 @@ element.
 For one element Columns, embedded Perl code may return sqlColumn{...}
 objects or strings:
 
+    my @col= ('name', sqlColumn{age});
     my $q= sql{
         SELECT .@col
     };
@@ -8310,7 +8150,7 @@ This will expand to the following:
 For syntactic hashes in list context, each hash's keys will be
 used, e.g.:
 
-    my %col= ( 'surname' => 1, 'first_name = 2 );
+    my %col= ( 'surname' => 1, 'first_name' => 2 );
     my $q= sql{
         SELECT .%col
     };
@@ -8324,7 +8164,7 @@ you might also end up with:
 
     SELECT `first_name`, `surname`;
 
-For this reason, it is usually no good idea to use multi-place hash
+For this reason, it is usually not a good idea to use multi-place hash
 interpolation, because the result columns will get identical names and
 due to non-determinism, you don't know the result column order either:
 
@@ -8528,7 +8368,7 @@ as all Perl interpolations.  For example:
 
     my $q= sql{
         SELECT name FROM customer
-    );
+    };
 
 This would be expanded (depending on how quote_identifier() quotes)
 similar to:
@@ -8673,6 +8513,18 @@ syntax, listing some tables before C<FROM> and some after it.  This
 syntax is rejected.  You are forced to write this with a C<USING>
 clause.  This is normalisation by forcing good upon the user.
 
+Unsupported MySQL Extension (from the MySQL documentation):
+
+    DELETE t1, t2 FROM t1 INNER JOIN t2 INNER JOIN t3
+    WHERE t1.id=t2.id AND t2.id=t3.id;
+
+The following is the supported equivalent.  Also note the use of
+C<CROSS JOIN> instead, as C<INNER JOIN> requires an C<ON> clause.
+Plus, you need to use parentheses:
+
+    DELETE FROM t1, t2 USING t1 CROSS JOIN t2 CROSS JOIN t3
+    WHERE (t1.id=t2.id) AND (t2.id=t3.id);
+
 =item CASE Normalisation
 
 A CASE expression with zero WHEN clauses will be normalised to its
@@ -8690,14 +8542,13 @@ Example:
         CASE a END
     };
 
-Same of these are syntax errors in plain SQL, but we accept them, and
+Some of these are syntax errors in plain SQL, but we accept them, and
 generate the following code, resp.:
 
     CASE `a` WHEN 1 THEN 0 ELSE 5 END,
     CASE `a` WHEN 1 THEN 0 ELSE NULL END,
     5
     NULL
-
 
 =item INSERT ... SET Normalisation
 
@@ -8713,9 +8564,10 @@ will be normalised to the standard form, e.g.:
     my %a= ( a => 5, b => 6 );
     my $q= sql{
         INSERT INTO t SET %a
-    }
+    };
 
-will be normalised to:
+will be normalised to (the column order may be different, depending
+on Perl's mood of enumerating the hash table):
 
     INSERT INTO `t` (`a`,`b`) VALUES (5,6);
 
@@ -8732,14 +8584,14 @@ Even more fancy things work:
 
     my $cola=  sqlColumn{ a };
     my $colc=  sqlColumn{ c };
-    my $exprb= sqlExpr{ b = 5 };
+    my $exprb= sqlExpr{ b = 6 };
     my $exprc= sqlExpr{ $colc = 7 };
     my $q= sql{
         INSERT INTO t SET $cola = 5, $exprb, $exprc;
     }
 
-In short, you can freely use C<INSERT ... SET> even for data bases
-that only support C<INSERT ... VALUES>.
+In short, you can freely use C<INSERT ... SET> even for data base
+servers that only support C<INSERT ... VALUES>.
 
 =item Operator/Function Normalisation
 
@@ -8747,12 +8599,22 @@ that only support C<INSERT ... VALUES>.
 
 =item *
 
-C<POW()> and C<**> and C<^> will be normalised to C<POWER>.
+C<POW()> and C<**> will be normalised to C<POWER>.
 
 =item *
 
-C<||> will be normalised to C<CONCAT> with C<write_dialect =>
-'mysql'>.
+C<||> will be normalised to C<CONCAT> if
+C<< write_dialect == 'mysql' >>.  And vice versa: C<CONCAT>
+will be translated to C<||> in any dialect but mysql.
+
+=item *
+
+MySQL and has an extension to parse C<&>, C<|>, and C<^> as bit
+operations like C.  In Oracle, on the other hand, there is C<BITAND>,
+but with a slightly different semantics.  To ease porting, the C
+operators are converted to C<BITAND>, C<BITOR>, C<BITXOR> for Oracle,
+and vice versa for MySQL.  You need a bit of more work (function
+definitions) for this to work in Oracle, however, but it is a start.
 
 =back
 
@@ -8764,7 +8626,7 @@ Sometimes you may want to parse SQL structures at run time, not
 at compile time.  There is a function C<parse> to do this.  Its
 invocation is straight-forward:
 
-    my $perl= SQL::Yapp::parse('Type', 'VARCHAR(50) NOT NULL');
+    my $perl= SQL::Yapp::parse('ColumnSpec', 'VARCHAR(50) NOT NULL');
 
 The result of this function is a string with Perl code (this is
 what the compiler needs, so this is what you get here).  To create
@@ -8775,7 +8637,7 @@ an object, you need to evaluate this:
 This C<$obj> behaves exactly like a structure created at compile time,
 e.g. the following creates the same object:
 
-    my $obj2= sqlType{VARCHAR(50) NOT NULL};
+    my $obj2= sqlColumnSpec{VARCHAR(50) NOT NULL};
 
 Neither for parse() nor for eval() you will need the DBI link (the dbh
 module option).  Only if you stringify the object, you will need it.
@@ -9306,13 +9168,17 @@ with the exception than instead of C<NATURAL INNER JOIN>, the
 specification C<NATURAL JOIN> is printed for further compatibility
 (e.g. with MySQL).
 
+Note that MySQL, C<INNER JOIN> and C<CROSS JOIN> are not
+distinguished, but in standard SQL, they are.  This module forces you
+to write more portable SQL: use C<INNER JOIN> if there is an C<ON>
+clause, and C<CROSS JOIN> if not.
 
 =head2 <Order>
 
     ( <Column>
     | <Expr>
     | [ 'Order' ] <Perl> )
-    [ ASC | DESC ]              
+    [ ASC | DESC ]
 
 Note that a string returned from a Perl interpolation is parsed as a
 column name in <Order> position, but a plain string is parsed as a
@@ -10028,12 +9894,12 @@ Several other SQL commands are also missing.
 
 =head1 AUTHOR
 
-Henrik Theiling <henrik@theiling.de>
+Henrik Theiling <cpan@theiling.de>
 
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright 2010 by Henrik Theiling <henrik@theiling.de>
+Copyright 2010 by Henrik Theiling <cpan@theiling.de>
 
 This program is free software; you may redistribute it and/or modify
 it under the same terms as Perl itself.

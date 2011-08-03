@@ -1,5 +1,16 @@
 Revision history for SQL-Yapp
 
-1.00    2011-01-01/0:00
-        First version, released on an unsuspecting world.
+1.001   2011-07-31/0:00
+        - BUG FIX: 'use DBI' in syntax.t (bug found by CPAN tests, thank you!)
+        - BUG FIX: CAST(x AS y) cannot not be parsed (like several others)
+        - BUG FIX: DEFAULT CHARACTER SET is not parsed correctly
+        - BUG FIX: quote_identifier module option doesn't work
+        - fixed documentation
+        - more tests (simple syntax check from earlier manual testing)
+        - more tests (some dialect switching features)
+        - more tests (documentation examples)
+        - added prerequisites to Makefile.PL
+
+1       2011-01-01/0:00
+        - First version, released on an unsuspecting world.
 

@@ -2,8 +2,6 @@
 
 use strict;
 use warnings;
-use DBI;
-use DBI::Const::GetInfoType;
 use Data::Dumper;
 use Test::Simple tests => 1;
 
