@@ -1,4 +1,6 @@
 TODO:
+   - check determinism
+
    - missing syntax:
      UNION
      WITH .. SELECT
@@ -164,6 +166,13 @@ TODO:
      so that this code has no knowledge about MySQL, PostgreSQL, Oracle,
      etc., but lets the packages handle it.
 
+   -  Klarstellen, warum `...`-Syntax benutzt wird.  Evtl. auch [...] erlauben
+      mit der entsprechenden Dialekt-Einstellung.
+
+    - In void context, prepare, execute and possibly fetch all rows and store
+      them somewhere.  Maybe don't fetch, but provide access to the handle
+      somehow.  Maybe have a special callback hook for running
+      commands in void mode.
 LATER:
    - ARRAY[...]
 
@@ -250,8 +259,9 @@ DONE:
      In that case, it would be easy, just add another function
      parse_select_stmt() that's like parse_stmt() but only accepts SELECT
      and interpol.
-                 
-   - Think about interpolating ORDER BY / GROUP BY stuff.  It will
+
+   - CANCELLED:
+     Think about interpolating ORDER BY / GROUP BY stuff.  It will
      happen in applications where the user can set the order.
      At least we need to interpolate the direction DESC/ASC.
      Better yet: a sequence of Order:
@@ -266,6 +276,14 @@ DONE:
          my $q=     sql{ SELECT * FROM B ORDER BY @order DESC };
 
          --> ... a ASC, b DESC
+
+     SOLUTION:
+     Store direction in bool variable and then use:
+
+         $order= sqlOrder{ $order DESC }
+             if $direction eq 'DESC';
+
+     This works already.
 
    - query types:
      SELECT
@@ -293,5 +311,4 @@ DONE:
        object which is already in proper syntax.  In any case, for
        qualified column names, we *must* invoke quote_identifier
        with both arguments.
-
 

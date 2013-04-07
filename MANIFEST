@@ -13,4 +13,5 @@ t/boilerplate.t     Test to check basic stuff doesn't still have the initial set
 t/syntax.t          Simple preprocessing test and Perl parsing test.  Does not need DB connection.
 t/docexamples.t     Tests examples from the documentation
 t/dialect.t         Test SQL dialect support
+t/simple.t          Tests used while implementing new features
 META.yml                                 Module meta-data (added by MakeMaker)

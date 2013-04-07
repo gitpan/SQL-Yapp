@@ -13,32 +13,51 @@ use SQL::Yapp
   , table_prefix => 'noten_'
   #, debug  => 1
   , write_dialect => 'mysql'
+  , quote_identifier => sub {
+        join('.', map { "`$_`" } grep { defined($_) } @_)
+    }
+  , quote => sub {
+        $_[0] && qq{'$_[0]'}
+    }
 ;
+
+sub DEBUG($)
+{
+    my ($s) = @_;
+    #print STDERR "DEBUG: $s\n";
+}
 
 sub test()
 {
     my $o1= SQL::Yapp::Asterisk->obj();
-    print STDERR "DEBUG: '$o1': ".Dumper($o1);
+    DEBUG "'$o1': ".Dumper($o1);
     my $b= "'end";
+    DEBUG "X";
     my %tab= ('x' => 1, 'y' => sqlExpr{NOT 5});
+    DEBUG "Y";
     my $tab= 'z';
     my @col= ('a', 'b');
     my %col= ('a' => 1, 'b' => 1);
     my %b=   (1 => 2);
     my %sql= ();
+    DEBUG "Z";
     my $d=   $sql{5};
     my $tabspec= sqlTable{ blah.blup };
+    DEBUG "A";
     my @join2= sqlJoin{
         NATURAL JOIN %tab
         INNER JOIN b ON 9
         LEFT OUTER JOIN b USING ( @col )
     };
+    DEBUG "B";
     my @cc= sqlColumn{ @col };
+    DEBUG "C";
     my @order=  sqlOrder{ Table @col DESC, c, @cc ASC };
+    DEBUG "D";
     my @order2= sqlOrder{ @order DESC };
-    print STDERR "DEBUG: order:\n".join(', ', map { Dumper($_) } @order)."\n";
-    print STDERR "DEBUG: order2:\n".join(', ', map { Dumper($_) } @order2)."\n";
-    print STDERR "DEBUG: $tabspec\n";
+    DEBUG "order:\n".join(', ', map { Dumper($_) } @order);
+    DEBUG "order2:\n".join(', ', map { Dumper($_) } @order2);
+    DEBUG "$tabspec\n";
     my $s2= sql {
         DELETE FROM test10;
     };
@@ -51,29 +70,29 @@ sub test()
         my ($x)= @_;
         return $x * 6;
     };
-    print "".Dumper($c1)."\n";
-    print "".Dumper($e1)."\n";
-    print "".Dumper($e2)."\n";
-    print "".Dumper($e3)."\n";
-    print sqlOrder{ {'a'} },"\n";
-    print sqlExpr{ {'a'} },"\n";
+    DEBUG "".Dumper($c1);
+    DEBUG "".Dumper($e1);
+    DEBUG "".Dumper($e2);
+    DEBUG "".Dumper($e3);
+    DEBUG sqlOrder{ {'a'} };
+    DEBUG sqlExpr{ {'a'} };
     my $cs= sqlCharSet{ main.utf8 };
     my $t1= sqlType{ VARCHAR(50) };
     my $t2= sqlType{ $t1 (100) };
     my $t3= sqlType{ ENUM('eins', 'zwei', 'drei') CHARSET $cs };
     my $t4= sqlType{ $t3 DROP CHARACTER SET };
-    print "$t1: ".Dumper($t1)."\n";
-    print "$t2: ".Dumper($t2)."\n";
-    print "$t3: ".Dumper($t3)."\n";
-    print "$t4: ".Dumper($t4)."\n";
+    DEBUG "$t1: ".Dumper($t1);
+    DEBUG "$t2: ".Dumper($t2);
+    DEBUG "$t3: ".Dumper($t3);
+    DEBUG "$t4: ".Dumper($t4);
     my $k1= sqlColumnSpec{ VARCHAR(50) CONSTRAINT len10 UNIQUE NOT NULL };
     my $k2= sqlColumnSpec{ $k1 INT };
     my $k3= sqlColumnSpec{ $k2 BLOB (50 K OCTETS)};
     my $k4= sqlColumnSpec{ $t3 DROP CHARACTER SET };
-    print "$k1: ".Dumper($k1)."\n";
-    print "$k2: ".Dumper($k2)."\n";
-    print "$k3: ".Dumper($k3)."\n";
-    print "$k4: ".Dumper($k4)."\n";
+    DEBUG "$k1: ".Dumper($k1);
+    DEBUG "$k2: ".Dumper($k2);
+    DEBUG "$k3: ".Dumper($k3);
+    DEBUG "$k4: ".Dumper($k4);
     my @to= sqlTableOption{
         ENGINE = innodb
         CHARSET = utf8
@@ -115,6 +134,7 @@ sub test()
                .{ map sql{s.c.t.$_}, @col };
         SELECT "hallo \'Welt $b", $b, { $b eq 'tesT' ? 5 : sql{ 'hallo' } } ;
         DELETE FROM test10 USING test1 @join2 WHERE a = 5 ;
+        SELECT a FROM b ORDER BY NULL;
         SELECT $e1;             # no parens
         SELECT 5 + .$c1;        # no parens
         SELECT 5 + $c1;         # no parens
@@ -259,6 +279,11 @@ sub test()
         SELECT 5 AND ({(1,2)} IS A SET);
 
         SELECT {} OR {map {sql{test = $_}} 1, 2};
+
+        SELECT blah FROM blub WHERE {} AND {
+            (0 ? sql { 1 } : ()),
+            (0 ? sql { 1 } : ()),
+        };
     };
     my @a2= sql{
         @a[1..2]
@@ -267,23 +292,24 @@ sub test()
     return "SQL:\n\t".join("\n\t", map { "$_;" } $tabspec, @join2, @a2, @a, @c)."\n";
 }
 
+#use DBI;
 #$dbh= DBI->connect(
-#    #"dbi:mysql:$DB;hostname=127.0.0.1;port=3306",
-#    #"$USER",
-#    #"$PW",
+#    "dbi:mysql:$DB;hostname=127.0.0.1;port=3306",
+#    "$USER",
+#    "$PW",
 #    {
 #        RaiseError => 1,
 #        AutoCommit => 0,
 #    }
 #);
 #
-#print "***** Data base driver: ".$dbh->get_info( $GetInfoType{SQL_DBMS_NAME} )."\n";
-#print "".test()."\n";
+#DEBUG "***** Data base driver: ".$dbh->get_info( $GetInfoType{SQL_DBMS_NAME} );
+#DEBUG "".test();
 #
 my $type1= SQL::Yapp::parse('Type', 'VARCHAR(60) CHARACTER SET utf8');
 #my $obj1=  eval($type1);
-#print STDERR "Manually parsed: $type1\n => $obj1\n";
-#print STDERR "".($obj1 ne '' ? 'non-empty' : 'empty')."\n";
+#DEBUG "Manually parsed: $type1\n => $obj1";
+#DEBUG "".($obj1 ne '' ? 'non-empty' : 'empty');
 
 ok(1);
 

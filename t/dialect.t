@@ -39,21 +39,21 @@ sub make_select_a_concat_b()
 
     is(sqlExpr{a--b}, q{`a` - (- `b`)});
 
-    is(sqlExpr{-b}, q{(- `b`)});
+    is(sqlExpr{-b}, q{- `b`});
 
     my @a=(1,2,3);
     is(sqlExpr{COALESCE({} OR NOT @a)}, q{COALESCE(((NOT '1') OR (NOT '2') OR (NOT '3')))});
 
     is(sqlExpr{COALESCE({} OR @a)}, q{COALESCE(('1' OR '2' OR '3'))});
 
-    is(sqlExpr{5 + COALESCE(@a)}, q{('5' + COALESCE('1', '2', '3'))});
+    is(sqlExpr{5 + COALESCE(@a)}, q{'5' + COALESCE('1', '2', '3')});
 
     # Generic:
     SQL::Yapp::write_dialect('generic');
 
-    is (sqlExpr{a & b},       q{(`a` & `b`)});
-    is (sqlExpr{a | b},       q{(`a` | `b`)});
-    is (sqlExpr{a ^ b},       q{(`a` ^ `b`)});
+    is (sqlExpr{a & b},       q{`a` & `b`});
+    is (sqlExpr{a | b},       q{`a` | `b`});
+    is (sqlExpr{a ^ b},       q{`a` ^ `b`});
     is (sqlExpr{BITAND(a,b)}, q{BITAND(`a`, `b`)});
     is (sqlExpr{BITOR(a,b)},  q{BITOR(`a`, `b`)});
     is (sqlExpr{BITXOR(a,b)}, q{BITXOR(`a`, `b`)});
@@ -63,7 +63,7 @@ sub make_select_a_concat_b()
     is (sqlExpr{a != b},      q{`a` <> `b`});
     is (sqlExpr{a % b},       q{MOD(`a`, `b`)});
     is (sqlExpr{a BETWEEN b AND c}, q{`a` BETWEEN `b` AND `c`});
-    is (sqlExpr{a IN (@a IS NULL)}, q{`a` IN (('1' IS NULL), ('2' IS NULL), ('3' IS NULL))});
+    is (sqlExpr{a IN (@a IS NULL)}, q{`a` IN ('1' IS NULL, '2' IS NULL, '3' IS NULL)});
     is (sqlExpr{a IN (@a)}, q{`a` IN ('1', '2', '3')});
 
     # MySQL dialect:
@@ -71,17 +71,17 @@ sub make_select_a_concat_b()
     my $q1= make_select_a_concat_b;
     is ($q1, q{SELECT CONCAT(`a`, `b`, '\'')});
 
-    is (sqlExpr{a & b},       q{(`a` & `b`)});
-    is (sqlExpr{a | b},       q{(`a` | `b`)});
-    is (sqlExpr{a ^ b},       q{(`a` ^ `b`)});
-    is (sqlExpr{BITAND(a,b)}, q{(`a` & `b`)});
-    is (sqlExpr{BITOR(a,b)},  q{(`a` | `b`)});
-    is (sqlExpr{BITXOR(a,b)}, q{(`a` ^ `b`)});
+    is (sqlExpr{a & b},       q{`a` & `b`});
+    is (sqlExpr{a | b},       q{`a` | `b`});
+    is (sqlExpr{a ^ b},       q{`a` ^ `b`});
+    is (sqlExpr{BITAND(a,b)}, q{`a` & `b`});
+    is (sqlExpr{BITOR(a,b)},  q{`a` | `b`});
+    is (sqlExpr{BITXOR(a,b)}, q{`a` ^ `b`});
 
     # PostgreSQL dialect:
     SQL::Yapp::write_dialect('postgresql');
     my $q2= make_select_a_concat_b;
-    is ($q2, q{SELECT (`a` || `b` || '\'')});
+    is ($q2, q{SELECT `a` || `b` || '\''});
 
     # Oracle:
     SQL::Yapp::write_dialect('oracle');
